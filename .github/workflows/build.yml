@@ -90,6 +90,9 @@ jobs:
       - name: Install macOS dependencies
         run: task build:deps
       - name: Set up keychain profile
+        # Signing secrets are not available on forks; unsigned builds are
+        # produced by the fallback step below instead of failing the job.
+        if: ${{ secrets.PROD_MACOS_CERTIFICATE != '' }}
         env:
           CI_KEYCHAIN_PWD: ${{ secrets.PROD_MACOS_CI_KEYCHAIN_PWD }}
           CERTIFICATE: ${{ secrets.PROD_MACOS_CERTIFICATE }}
@@ -100,6 +103,7 @@ jobs:
           CERTIFICATE_PWD=$CERTIFICATE_PWD \
           task build:setup-keychain
       - name: Build & archive macOS artifacts
+        if: ${{ secrets.PROD_MACOS_CERTIFICATE != '' }}
         env:
           CERTIFICATE_NAME: ${{ secrets.PROD_MACOS_CERTIFICATE_NAME }}
           NOTARIZATION_APPLE_ID: ${{ secrets.PROD_MACOS_NOTARIZATION_APPLE_ID }}
@@ -119,6 +123,16 @@ jobs:
           NOTARIZATION_TEAM_ID=$NOTARIZATION_TEAM_ID \
           NOTARIZATION_PWD=$NOTARIZATION_PWD \
           task build:prod-noupdate ARCH=${{ matrix.arch }}
+          tar -czvf Zen_darwin_${{ matrix.arch }}_noselfupdate.tar.gz -C build/bin Zen.app
+      - name: Build & archive macOS artifacts (unsigned, ad-hoc)
+        if: ${{ secrets.PROD_MACOS_CERTIFICATE == '' }}
+        run: |
+          task build:app ARCH=${{ matrix.arch }}
+          codesign --force --deep --sign - build/bin/Zen.app
+          tar -czvf Zen_darwin_${{ matrix.arch }}.tar.gz -C build/bin Zen.app
+
+          task build:app-noupdate ARCH=${{ matrix.arch }}
+          codesign --force --deep --sign - build/bin/Zen.app
           tar -czvf Zen_darwin_${{ matrix.arch }}_noselfupdate.tar.gz -C build/bin Zen.app
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -180,7 +194,9 @@ jobs:
             ci-upload/unsigned/Zen-noselfupdate.exe
             ci-upload/unsigned/Zen-installer.exe
       - name: Sign with SignPath
-        if: startsWith(github.ref, 'refs/tags/v')
+        # Signing secrets are not available on forks; unsigned artifacts are
+        # packaged by the fallback step below instead of failing the job.
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.SIGNPATH_API_TOKEN != '' }}
         uses: signpath/github-action-submit-signing-request@4f13d373e8f0cd8d3c0465ff4877feff27aed2ae # v1.2
         with:
           api-token:                    ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -195,7 +211,7 @@ jobs:
             arch: "${{ matrix.arch }}"
             version: "${{ github.ref }}"
       - name: Prepare final artifacts using unsigned artifacts
-        if: ${{ ! startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') || secrets.SIGNPATH_API_TOKEN == '' }}
         run: |
           Move-Item -Path .\ci-upload\unsigned\Zen-installer.exe `
                           -Destination .\ci-upload\final\Zen-${{ matrix.arch }}-installer.exe
@@ -217,7 +233,7 @@ jobs:
             -Path .\ci-upload\unsigned\Zen.exe `
             -DestinationPath .\ci-upload\final\Zen_windows_${{ matrix.arch }}_noselfupdate.zip
       - name: Prepare final artifacts using signed artifacts
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.SIGNPATH_API_TOKEN != '' }}
         run: |
           Move-Item -Path .\ci-upload\signed\Zen-installer.exe `
                           -Destination .\ci-upload\final\Zen-${{ matrix.arch }}-installer.exe
