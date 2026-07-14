@@ -98,12 +98,17 @@ func (cs *DiskCertStore) Init() error {
 		if err := cs.loadCA(); err != nil {
 			return fmt.Errorf("CA load: %w", err)
 		}
-		if time.Now().Add(caRotationLeadTime).Before(cs.cert.NotAfter) {
+		now := time.Now()
+		expiresSoon := !now.Add(caRotationLeadTime).Before(cs.cert.NotAfter)
+		// A CA outliving the current validity policy was generated before the
+		// hardening (32-year lifetime) and must be replaced.
+		outlivesPolicy := cs.cert.NotAfter.After(now.Add(caValidity))
+		if !expiresSoon && !outlivesPolicy {
 			return nil
 		}
 
-		// The short-lived CA is expired or about to expire; uninstall it and
-		// fall through to generate and install a fresh one.
+		// The CA is expired, about to expire, or too long-lived; uninstall it
+		// and fall through to generate and install a fresh one.
 		log.Printf("root CA expires at %v; rotating", cs.cert.NotAfter)
 		if err := cs.uninstallCATrust(); err != nil {
 			return fmt.Errorf("uninstall expiring CA from system trust store: %w", err)
