@@ -1,13 +1,11 @@
-import { Button, Classes, FormGroup, InputGroup, Switch, Tooltip } from '@blueprintjs/core';
-import { InfoSign } from '@blueprintjs/icons';
+import { Button, FormGroup, InputGroup, Tooltip } from '@blueprintjs/core';
 import { useRef, useState } from 'react';
-import { Trans, useTranslation } from 'react-i18next';
+import { useTranslation } from 'react-i18next';
 
 import { AppToaster } from '@/common/toaster';
 import { useProxyState } from '@/context/ProxyStateContext';
 import { FilterListType } from '@/FilterLists/types';
 import { AddFilterList } from 'wails/go/config/Config';
-import './index.css';
 
 export function CreateFilterList({ onAdd }: { onAdd: () => void }) {
   const { t } = useTranslation();
@@ -15,7 +13,6 @@ export function CreateFilterList({ onAdd }: { onAdd: () => void }) {
   const urlRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
-  const [trusted, setTrusted] = useState(false);
   const [loading, setLoading] = useState(false);
 
   return (
@@ -26,42 +23,6 @@ export function CreateFilterList({ onAdd }: { onAdd: () => void }) {
 
       <FormGroup label="Name" labelFor="name" labelInfo="(optional)">
         <InputGroup id="name" placeholder="Example filter list" type="text" inputRef={nameRef} />
-      </FormGroup>
-
-      <FormGroup
-        label={
-          <Tooltip
-            content={
-              <span className={Classes.TEXT_SMALL}>
-                <Trans
-                  i18nKey="createFilterList.trustedListsWarning"
-                  components={{
-                    code: <code />,
-                    strong: <strong />,
-                  }}
-                />
-              </span>
-            }
-            placement="top"
-            minimal
-            matchTargetWidth
-          >
-            <span className="create-filter-list__trusted-label">
-              <span>{t('filterLists.trusted')}</span>
-              <InfoSign className={Classes.TEXT_MUTED} size={12} />
-            </span>
-          </Tooltip>
-        }
-        labelFor="trusted"
-      >
-        <Switch
-          id="trusted"
-          large
-          checked={trusted}
-          onClick={(e) => {
-            setTrusted(e.currentTarget.checked);
-          }}
-        />
       </FormGroup>
 
       <Tooltip content={t('common.stopProxyToAddFilter') as string} disabled={!isProxyRunning} placement="top">
@@ -85,7 +46,8 @@ export function CreateFilterList({ onAdd }: { onAdd: () => void }) {
                 name,
                 type: FilterListType.CUSTOM,
                 enabled: true,
-                trusted,
+                // Hardened build: remote lists can never be marked as trusted.
+                trusted: false,
                 locales: [], // FIX: this is a dirty fix, rewrite by making AddFilterList accept a custom struct.
               });
             } catch (err) {
@@ -97,7 +59,6 @@ export function CreateFilterList({ onAdd }: { onAdd: () => void }) {
             setLoading(false);
             if (urlRef.current) urlRef.current.value = '';
             if (nameRef.current) nameRef.current.value = '';
-            setTrusted(false);
             onAdd();
           }}
           loading={loading}

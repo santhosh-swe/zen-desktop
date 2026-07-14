@@ -94,7 +94,14 @@ func NewFilter(networkRules networkRules, injector documentInjector, filterListS
 	return f, nil
 }
 
-const includeMaxDepth = 20
+const (
+	// includeMaxDepth bounds how deeply !#include directives may nest.
+	includeMaxDepth = 5
+	// includeMaxTotal bounds the total number of !#include directives expanded
+	// per top-level filter list, so a malicious list cannot fan out into
+	// unbounded concurrent downloads.
+	includeMaxTotal = 64
+)
 
 // AddURL fetches a filter list from a URL, expands !#include directives, and adds rules to the filter.
 func (f *Filter) AddURL(listURL string, listName string, listTrusted bool) error {
@@ -123,6 +130,7 @@ func (f *Filter) AddURL(listURL string, listName string, listTrusted bool) error
 	}
 
 	visited := make(map[string]struct{})
+	var includeCount int
 	var visitedMu sync.Mutex
 
 	var wg sync.WaitGroup
@@ -166,6 +174,15 @@ func (f *Filter) AddURL(listURL string, listName string, listTrusted bool) error
 					log.Printf("filter: error resolving include: %v", err)
 					continue
 				}
+
+				visitedMu.Lock()
+				if includeCount >= includeMaxTotal {
+					visitedMu.Unlock()
+					log.Printf("filter: include limit (%d) reached, skipping %q", includeMaxTotal, includeURL)
+					continue
+				}
+				includeCount++
+				visitedMu.Unlock()
 
 				wg.Add(1)
 				go parseURL(includeURL, depth+1)

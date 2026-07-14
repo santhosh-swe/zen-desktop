@@ -17,7 +17,10 @@ func (a *App) initFilter(filter *filter.Filter) {
 			continue
 		}
 		wg.Go(func() {
-			if err := filter.AddURL(filterList.URL, filterList.Name, filterList.Trusted); err != nil {
+			// Hardened build: remotely downloaded lists are never treated as
+			// trusted, regardless of what the (importable) config says.
+			// Trusted-only rule types grant page-injection privileges.
+			if err := filter.AddURL(filterList.URL, filterList.Name, false); err != nil {
 				log.Printf("failed to add filter list %q to filter: %v", filterList.URL, err)
 			}
 		})
@@ -26,7 +29,7 @@ func (a *App) initFilter(filter *filter.Filter) {
 	wg.Go(func() {
 		myRules := a.config.GetRules()
 		reader := strings.NewReader(strings.Join(myRules, "\n"))
-		if err := filter.AddReader(reader, myRulesFilterName, true); err != nil {
+		if err := filter.AddReader(reader, myRulesFilterName, false); err != nil {
 			log.Printf("failed to add my rules to filter: %v", err)
 			return
 		}

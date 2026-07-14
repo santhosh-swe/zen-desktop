@@ -24,7 +24,6 @@ import (
 	"github.com/irbis-sh/zen-desktop/internal/networkrules"
 	"github.com/irbis-sh/zen-desktop/internal/proxy"
 	"github.com/irbis-sh/zen-desktop/internal/routing"
-	"github.com/irbis-sh/zen-desktop/internal/selfupdate"
 	"github.com/irbis-sh/zen-desktop/internal/sysproxy"
 	"github.com/irbis-sh/zen-desktop/internal/systray"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -108,12 +107,9 @@ func (a *App) commonStartup(ctx context.Context) {
 	a.config.RunMigrations()
 	a.systrayMgr.Init(ctx)
 
-	su, err := selfupdate.NewSelfUpdater(a.config, a.frontendEvents)
-	if err != nil {
-		log.Printf("failed to initialize self-updater: %v", err)
-	} else if su != nil {
-		go su.RunScheduledUpdateChecks()
-	}
+	// Hardened build: the self-updater is intentionally never initialized.
+	// Updates must be built from source and installed manually so that no
+	// remote party can replace the running binary.
 
 	time.AfterFunc(time.Second, func() {
 		// This is a workaround for the issue where not all React components are mounted in time.
@@ -448,7 +444,9 @@ func (a *App) ImportCustomFilterLists() error {
 }
 
 func (a *App) IsNoSelfUpdate() bool {
-	return selfupdate.NoSelfUpdate == "true"
+	// Hardened build: self-updating is removed structurally, regardless of
+	// build flags. Returning true also hides the update settings in the UI.
+	return true
 }
 
 func (a *App) OnSecondInstanceLaunch(secondInstanceData options.SecondInstanceData) {

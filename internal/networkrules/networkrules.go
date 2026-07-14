@@ -1,7 +1,6 @@
 package networkrules
 
 import (
-	"fmt"
 	"net/http"
 	"net/url"
 
@@ -21,6 +20,13 @@ func New() *NetworkRules {
 	}
 }
 
+// ModifyReq matches the request against the loaded rules and reports whether
+// it should be blocked.
+//
+// Hardened build: network rules are block-only. Rules carrying action or query
+// modifiers (removeparam, removeheader, header injection, jsonprune, etc.) are
+// matched but never applied, so remotely downloaded filter lists cannot
+// rewrite requests, strip parameters, or trigger redirects.
 func (nr *NetworkRules) ModifyReq(req *http.Request) (appliedRules []rule.Rule, shouldBlock bool, redirectURL string) {
 	reqURL := renderURLWithoutPort(req.URL)
 
@@ -37,14 +43,6 @@ func (nr *NetworkRules) ModifyReq(req *http.Request) (appliedRules []rule.Rule, 
 		return er.ShouldMatchReq(req)
 	})
 
-	initialURL := req.URL.String()
-
-	var query url.Values
-	if req.URL.RawQuery != "" {
-		query = req.URL.Query()
-	}
-
-	var queryModified bool
 outer:
 	for _, r := range primaryRules {
 		for _, ex := range exceptions {
@@ -55,69 +53,16 @@ outer:
 		if r.ShouldBlockReq(req) {
 			return []rule.Rule{*r}, true, ""
 		}
-
-		modified := r.ModifyReq(req)
-		if query != nil {
-			if r.ModifyReqQuery(query) {
-				queryModified = true
-				modified = true
-			}
-		}
-
-		if modified {
-			appliedRules = append(appliedRules, *r)
-		}
 	}
 
-	if queryModified {
-		// Re-encoding the same query params may cause subtle normalization changes
-		// (e.g. parameter reordering), so only do it if they were actually modified.
-		req.URL.RawQuery = query.Encode()
-	}
-
-	finalURL := req.URL.String()
-	if initialURL != finalURL {
-		return appliedRules, false, finalURL
-	}
-
-	return appliedRules, false, ""
+	return nil, false, ""
 }
 
-func (nr *NetworkRules) ModifyRes(req *http.Request, res *http.Response) ([]rule.Rule, error) {
-	url := renderURLWithoutPort(req.URL)
-
-	primaryRules := nr.primaryStore.Get(url)
-	primaryRules = filter(primaryRules, func(r *rule.Rule) bool {
-		return r.ShouldMatchRes(res)
-	})
-	if len(primaryRules) == 0 {
-		return nil, nil
-	}
-
-	exceptions := nr.exceptionStore.Get(url)
-	exceptions = filter(exceptions, func(er *exceptionrule.ExceptionRule) bool {
-		return er.ShouldMatchRes(res)
-	})
-
-	var appliedRules []rule.Rule
-outer:
-	for _, r := range primaryRules {
-		for _, ex := range exceptions {
-			if ex.Cancels(r) {
-				continue outer
-			}
-		}
-
-		m, err := r.ModifyRes(res)
-		if err != nil {
-			return nil, fmt.Errorf("apply %q: %v", r.RawRule, err)
-		}
-		if m {
-			appliedRules = append(appliedRules, *r)
-		}
-	}
-
-	return appliedRules, nil
+// ModifyRes is a no-op in this hardened build: response modification (header
+// removal/injection, body rewriting) would let remotely downloaded filter
+// lists alter page security properties, so only request blocking is supported.
+func (nr *NetworkRules) ModifyRes(*http.Request, *http.Response) ([]rule.Rule, error) {
+	return nil, nil
 }
 
 func (nr *NetworkRules) Compact() {
