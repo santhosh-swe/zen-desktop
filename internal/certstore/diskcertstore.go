@@ -30,6 +30,12 @@ const (
 	keyFilename = "rootCA-key.pem"
 	// certCommonName is the common name for the root CA certificate.
 	certCommonName = "Zen Personal CA"
+	// caValidity is the lifetime of a newly generated root CA. Hardened build:
+	// kept short so a stolen CA key has a bounded window of usefulness.
+	caValidity = 365 * 24 * time.Hour
+	// caRotationLeadTime is how long before expiry Init proactively replaces
+	// the root CA with a freshly generated one.
+	caRotationLeadTime = 30 * 24 * time.Hour
 )
 
 type CAStatusManager interface {
@@ -92,13 +98,31 @@ func (cs *DiskCertStore) Init() error {
 		if err := cs.loadCA(); err != nil {
 			return fmt.Errorf("CA load: %w", err)
 		}
-		return nil
+		now := time.Now()
+		expiresSoon := !now.Add(caRotationLeadTime).Before(cs.cert.NotAfter)
+		// A CA outliving the current validity policy was generated before the
+		// hardening (32-year lifetime) and must be replaced.
+		outlivesPolicy := cs.cert.NotAfter.After(now.Add(caValidity))
+		if !expiresSoon && !outlivesPolicy {
+			return nil
+		}
+
+		// The CA is expired, about to expire, or too long-lived; uninstall it
+		// and fall through to generate and install a fresh one.
+		log.Printf("root CA expires at %v; rotating", cs.cert.NotAfter)
+		if err := cs.uninstallCATrust(); err != nil {
+			return fmt.Errorf("uninstall expiring CA from system trust store: %w", err)
+		}
+		if err := cs.uninstallNSS(); err != nil {
+			log.Printf("uninstall expiring CA from NSS database: %v", err)
+		}
+		cs.caStatusManager.SetCAInstalled(false)
 	}
 
 	if err := os.RemoveAll(cs.folderPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove existing CA folder: %v", err)
 	}
-	if err := os.MkdirAll(cs.folderPath, 0755); err != nil {
+	if err := os.MkdirAll(cs.folderPath, 0700); err != nil {
 		return fmt.Errorf("create certs folder: %v", err)
 	}
 	if err := cs.newCA(); err != nil {
@@ -185,8 +209,9 @@ func (cs *DiskCertStore) newCA() error {
 		},
 		SubjectKeyId: skid[:],
 
-		NotAfter:  time.Now().AddDate(32, 0, 0),
-		NotBefore: time.Now(),
+		// NotBefore is backdated slightly to tolerate clock skew.
+		NotAfter:  time.Now().Add(caValidity),
+		NotBefore: time.Now().Add(-5 * time.Minute),
 
 		KeyUsage: x509.KeyUsageCertSign,
 

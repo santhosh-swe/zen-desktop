@@ -7,22 +7,100 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	neturl "net/url"
 	"regexp"
+	"syscall"
 	"time"
 
 	"github.com/irbis-sh/zen-desktop/internal/filterliststore/diskcache"
 )
 
-const defaultExpiry = 24 * time.Hour
+const (
+	defaultExpiry = 24 * time.Hour
+	// maxListSize bounds the size of a single downloaded filter list so that a
+	// compromised list host cannot exhaust memory or disk.
+	maxListSize = 20 << 20 // 20 MiB
+	// maxRedirects bounds redirect chains followed while downloading lists.
+	maxRedirects = 3
+)
 
 var (
 	httpClient = &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			// Proxy is intentionally nil: list downloads always connect
+			// directly, so proxy env vars cannot reroute them.
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+				// Control runs on every connection attempt with the resolved
+				// address, so it also covers redirects and DNS rebinding.
+				Control: func(_, address string, _ syscall.RawConn) error {
+					host, _, err := net.SplitHostPort(address)
+					if err != nil {
+						return fmt.Errorf("split host/port: %w", err)
+					}
+					ip := net.ParseIP(host)
+					if ip == nil {
+						return fmt.Errorf("dial target %q is not an IP address", host)
+					}
+					if !isPublicIP(ip) {
+						return fmt.Errorf("refusing to connect to non-public address %s", ip)
+					}
+					return nil
+				},
+			}).DialContext,
+			TLSHandshakeTimeout: 10 * time.Second,
+			ForceAttemptHTTP2:   true,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= maxRedirects {
+				return fmt.Errorf("stopped after %d redirects", maxRedirects)
+			}
+			if req.URL.Scheme != "https" {
+				return errors.New("refusing to follow redirect to non-HTTPS URL")
+			}
+			return nil
+		},
 	}
 	// headerRegex matches comments prefixed with a hash and [Adblock Plus 2.0]-style headers.
 	headerRegex = regexp.MustCompile(`^(?:!|\[|#[^#%@$])`)
 )
+
+// isPublicIP reports whether ip is a globally routable unicast address.
+// Loopback, RFC 1918/4193 private, link-local (including the cloud metadata
+// range), multicast, and unspecified addresses are all rejected.
+func isPublicIP(ip net.IP) bool {
+	switch {
+	case ip.IsLoopback(),
+		ip.IsPrivate(),
+		ip.IsLinkLocalUnicast(),
+		ip.IsLinkLocalMulticast(),
+		ip.IsInterfaceLocalMulticast(),
+		ip.IsMulticast(),
+		ip.IsUnspecified():
+		return false
+	default:
+		return true
+	}
+}
+
+// maxSizeReader errors once more than limit bytes have been read.
+type maxSizeReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+func (m *maxSizeReader) Read(p []byte) (int, error) {
+	n, err := m.r.Read(p)
+	m.remaining -= int64(n)
+	if m.remaining < 0 {
+		return n, fmt.Errorf("filter list exceeds the maximum allowed size of %d bytes", maxListSize)
+	}
+	return n, err
+}
 
 type FilterListStore struct {
 	cache *diskcache.Cache
@@ -40,6 +118,15 @@ func New(cachePath string) (*FilterListStore, error) {
 }
 
 func (st *FilterListStore) Get(url string) (io.ReadCloser, error) {
+	// Hardened build: filter lists may only be fetched over HTTPS. Enforced
+	// before the cache lookup so previously cached plaintext-HTTP lists are
+	// also refused.
+	if parsedURL, err := neturl.Parse(url); err != nil {
+		return nil, fmt.Errorf("parse url: %v", err)
+	} else if parsedURL.Scheme != "https" {
+		return nil, fmt.Errorf("refusing to fetch filter list over %q: only HTTPS is allowed", parsedURL.Scheme)
+	}
+
 	if content, err := st.cache.Load(url); err != nil {
 		log.Printf("failed to load from cache: %v", err)
 	} else if content != nil {
@@ -52,7 +139,7 @@ func (st *FilterListStore) Get(url string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("create request: %v", err)
 	}
 
-	resp, err := httpClient.Do(req) // #nosec G704 -- URL is from configured filter lists, not arbitrary user input
+	resp, err := httpClient.Do(req) // #nosec G704 -- URL is validated as HTTPS above, and the transport refuses non-public dial targets.
 	if err != nil {
 		return nil, fmt.Errorf("do request: %v", err)
 	}
@@ -62,6 +149,11 @@ func (st *FilterListStore) Get(url string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("non-200 response: %q", resp.Status)
 	}
 
+	if resp.ContentLength > maxListSize {
+		resp.Body.Close()
+		return nil, fmt.Errorf("filter list size %d exceeds the maximum allowed size of %d bytes", resp.ContentLength, maxListSize)
+	}
+
 	var teeBuffer bytes.Buffer
 	var notifyCh <-chan struct{}
 	var errCh <-chan struct{}
@@ -69,7 +161,7 @@ func (st *FilterListStore) Get(url string) (io.ReadCloser, error) {
 		io.Reader
 		io.Closer
 	}{
-		Reader: io.TeeReader(resp.Body, &teeBuffer),
+		Reader: io.TeeReader(&maxSizeReader{r: resp.Body, remaining: maxListSize}, &teeBuffer),
 		Closer: resp.Body,
 	})
 

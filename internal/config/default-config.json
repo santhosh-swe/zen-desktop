@@ -17,8 +17,7 @@
         "url": "https://raw.githubusercontent.com/AdguardTeam/FiltersRegistry/master/filters/filter_2_Base/filter.txt",
         "name": "AdGuard Base filter",
         "enabled": true,
-        "type": "ads",
-        "trusted": true
+        "type": "ads"
       },
       {
         "url": "https://cdn.jsdelivr.net/gh/irbis-sh/filter-lists@master/privacy/privacy.txt",
@@ -36,8 +35,7 @@
         "url": "https://raw.githubusercontent.com/AdguardTeam/FiltersRegistry/master/filters/filter_3_Spyware/filter.txt",
         "name": "AdGuard Spyware filter",
         "enabled": true,
-        "type": "privacy",
-        "trusted": true
+        "type": "privacy"
       },
       {
         "url": "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/LegitimateURLShortener.txt",
@@ -291,7 +289,7 @@
         "locales": ["mk"]
       },
       {
-        "url": "http://easylist-downloads.adblockplus.org/easylistdutch.txt",
+        "url": "https://easylist-downloads.adblockplus.org/easylistdutch.txt",
         "name": "🇳🇱NL 🇧🇪BE: EasyList Dutch",
         "enabled": false,
         "type": "regional",
@@ -384,9 +382,9 @@
     "port": 0,
     "pacPort": 0,
     "routing": {
-      "mode": "blocklist",
+      "mode": "allowlist",
       "appPaths": []
     }
   },
-  "updatePolicy": "automatic"
+  "updatePolicy": "disabled"
 }

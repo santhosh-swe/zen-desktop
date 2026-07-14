@@ -193,7 +193,7 @@ func TestRegexpRules(t *testing.T) {
 		}
 	})
 
-	t.Run("modifies matching response", func(t *testing.T) {
+	t.Run("does not modify matching response (block-only hardening)", func(t *testing.T) {
 		t.Parallel()
 
 		nr := New()
@@ -206,11 +206,11 @@ func TestRegexpRules(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(applied) != 1 {
-			t.Fatalf("applied rules = %d, want 1", len(applied))
+		if len(applied) != 0 {
+			t.Fatalf("applied rules = %d, want 0", len(applied))
 		}
-		if res.Header.Get("X-Test") != "" {
-			t.Fatal("expected response header to be removed")
+		if res.Header.Get("X-Test") != "1" {
+			t.Fatal("expected response header to be preserved")
 		}
 	})
 }
@@ -302,23 +302,27 @@ func TestExceptionRules(t *testing.T) {
 		}
 	})
 
-	t.Run("exception cancels query modification", func(t *testing.T) {
+	t.Run("query modification rules are inert (block-only hardening)", func(t *testing.T) {
 		t.Parallel()
 
 		nr := New()
 		if _, err := nr.ParseRule(`||example.com^$removeparam=utm_source`, nil); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := nr.ParseRule(`@@||example.com^$removeparam=utm_source`, nil); err != nil {
-			t.Fatal(err)
-		}
 
-		_, shouldBlock, redirectURL := nr.ModifyReq(newTestRequest(t, "https://example.com/?utm_source=ad&id=1", nil))
+		req := newTestRequest(t, "https://example.com/?utm_source=ad&id=1", nil)
+		applied, shouldBlock, redirectURL := nr.ModifyReq(req)
 		if shouldBlock {
 			t.Fatal("expected query modification rule not to block")
 		}
 		if redirectURL != "" {
 			t.Fatalf("redirect URL = %q, want empty", redirectURL)
+		}
+		if len(applied) != 0 {
+			t.Fatalf("applied rules = %d, want 0", len(applied))
+		}
+		if req.URL.String() != "https://example.com/?utm_source=ad&id=1" {
+			t.Fatalf("request URL = %q, want unmodified", req.URL.String())
 		}
 	})
 

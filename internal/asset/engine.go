@@ -1,7 +1,6 @@
 package asset
 
 import (
-	"bytes"
 	"fmt"
 	"net"
 	"net/http"
@@ -81,65 +80,46 @@ func NewEngine(assetServerPort int) (*Engine, error) {
 }
 
 // AddRule attempts to add a non-network rule. Returns handled=true if consumed.
-func (e *Engine) AddRule(rule string, filterListTrusted bool) (handled bool, err error) {
+//
+// Hardened build: only cosmetic (element-hiding) rules are accepted. They
+// compile to sanitized selector-only `display:none` stylesheets and cannot run
+// code or trigger network requests. Scriptlets, JS rules, arbitrary-CSS rules,
+// and extended-CSS rules give remotely downloaded filter lists control over
+// page behavior, so they are recognized but intentionally discarded (returning
+// handled=true keeps them from reaching the network-rule parser).
+func (e *Engine) AddRule(rule string, _ bool) (handled bool, err error) {
 	switch {
 	case scriptlet.RuleRegex.MatchString(rule):
-		if err := e.scriptlets.AddRule(rule, filterListTrusted); err != nil {
-			return true, fmt.Errorf("add scriptlet: %w", err)
-		}
 		return true, nil
 	case cosmetic.IsRule(rule):
 		if err := e.cosmetic.AddRule(rule); err != nil {
 			return true, fmt.Errorf("add cosmetic rule: %w", err)
 		}
 		return true, nil
-	case extendedcss.IsRule(rule):
-		if err := e.extendedCSS.AddRule(rule); err != nil {
-			return true, fmt.Errorf("add extended css rule: %w", err)
-		}
-		return true, nil
-	case filterListTrusted && cssrule.RuleRegex.MatchString(rule):
-		if err := e.cssRules.AddRule(rule); err != nil {
-			return true, fmt.Errorf("add css rule: %w", err)
-		}
-		return true, nil
-	case filterListTrusted && jsrule.RuleRegex.MatchString(rule):
-		if err := e.jsRules.AddRule(rule); err != nil {
-			return true, fmt.Errorf("add js rule: %w", err)
-		}
+	case extendedcss.IsRule(rule),
+		cssrule.RuleRegex.MatchString(rule),
+		jsrule.RuleRegex.MatchString(rule):
 		return true, nil
 	default:
 		return false, nil
 	}
 }
 
-// Inject appends asset tags for the matching hostname into HTML responses.
+// Inject appends the cosmetic (element-hiding) stylesheet into HTML responses.
+//
+// Hardened build: no scripts are ever injected, and the CSP is only extended
+// with a nonce for this single loopback-served stylesheet.
 func (e *Engine) Inject(_ *http.Request, res *http.Response) error {
-	scriptletsNonce := csp.NewNonce()
-	jsRuleNonce := csp.NewNonce()
-	extendedCSSNonce := csp.NewNonce()
-	cosmeticCSSNonce := csp.NewNonce()
-	cssRuleNonce := csp.NewNonce()
+	nonce := csp.NewNonce()
 
 	operations := []csp.PatchOperation{
-		{Nonce: scriptletsNonce, Kind: csp.Script, ResourceURL: e.scriptletsURL},
-		{Nonce: jsRuleNonce, Kind: csp.Script, ResourceURL: e.jsRuleURL},
-		{Nonce: extendedCSSNonce, Kind: csp.Script, ResourceURL: e.extendedCSSURL},
-		{Nonce: cosmeticCSSNonce, Kind: csp.Style, ResourceURL: e.cosmeticCSSURL},
-		{Nonce: cssRuleNonce, Kind: csp.Style, ResourceURL: e.cssRuleCSSURL},
+		{Nonce: nonce, Kind: csp.Style, ResourceURL: e.cosmeticCSSURL},
 	}
 	if err := csp.PatchHeadersBatch(res, operations); err != nil {
 		return fmt.Errorf("patch CSP headers: %w", err)
 	}
 
-	var injection bytes.Buffer
-	injection.WriteString(scriptTag(e.scriptletsURL, scriptletsNonce))
-	injection.WriteString(scriptTag(e.jsRuleURL, jsRuleNonce))
-	injection.WriteString(scriptTag(e.extendedCSSURL, extendedCSSNonce))
-	injection.WriteString(styleTag(e.cosmeticCSSURL, cosmeticCSSNonce))
-	injection.WriteString(styleTag(e.cssRuleCSSURL, cssRuleNonce))
-
-	if err := httprewrite.AppendHTMLHeadContents(res, injection.Bytes()); err != nil {
+	if err := httprewrite.AppendHTMLHeadContents(res, []byte(styleTag(e.cosmeticCSSURL, nonce))); err != nil {
 		return fmt.Errorf("append head contents: %w", err)
 	}
 
@@ -178,10 +158,6 @@ func (e *Engine) assetBytes(hostname string, kind kind) ([]byte, error) {
 
 func getAssetURL(base *url.URL, path string) string {
 	return base.JoinPath(path).String()
-}
-
-func scriptTag(src, nonce string) string {
-	return fmt.Sprintf(`<script nonce="%s" src="%s"></script>`, nonce, src)
 }
 
 func styleTag(href, nonce string) string {
